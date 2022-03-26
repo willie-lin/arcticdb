@@ -316,8 +316,9 @@ func (t *TableBlock) Insert(buf *dynparquet.Buffer) error {
 		return nil
 	}
 
-	tx, _, commit := t.db.begin()
-	defer commit()
+	tx, _, commit := t.table.db.begin()
+	t.wg.Add(1)
+	defer commit(t.wg.Done)
 
 	rowsToInsertPerGranule, err := t.splitRowsByGranule(buf)
 	if err != nil {
@@ -342,7 +343,8 @@ func (t *TableBlock) splitGranule(granule *Granule) {
 	}
 
 	// Obtain a new tx for this compaction
-	tx, watermark, commit := t.db.begin()
+	tx, watermark, commit := t.table.db.begin()
+	t.wg.Add(1)
 
 	// Start compaction by adding sentinel node to parts list
 	parts := granule.parts.Sentinel(Compacting)
@@ -353,8 +355,8 @@ func (t *TableBlock) splitGranule(granule *Granule) {
 	sizeBefore := int64(0)
 	// Convert all the parts into a set of rows
 	parts.Iterate(func(p *Part) bool {
-		// Don't merge parts from an newer tx, or from an uncompleted tx, or a completed tx that finished after this tx started
-		if p.tx > tx || p.tx > watermark {
+		// Don't merge uncompleted transactions
+		if p.tx > watermark {
 			remain = append(remain, p)
 			return true
 		}
@@ -370,6 +372,11 @@ func (t *TableBlock) splitGranule(granule *Granule) {
 	merge, err := t.table.config.schema.MergeDynamicRowGroups(bufs)
 	if err != nil {
 		panic(err)
+	}
+
+	if len(bufs) == 0 { // aborting; nothing to do
+		commit(t.wg.Done)
+		return
 	}
 
 	b := bytes.NewBuffer(nil)
@@ -403,6 +410,7 @@ func (t *TableBlock) splitGranule(granule *Granule) {
 	if n < t.table.config.granuleSize { // It's possible to have a Granule marked for compaction but all the parts in it aren't completed tx's yet
 		for {
 			if atomic.CompareAndSwapUint64(&granule.pruned, 1, 0) { // unmark pruned, so that we can compact it in the future
+				commit(t.wg.Done)
 				return
 			}
 		}
@@ -440,7 +448,7 @@ func (t *TableBlock) splitGranule(granule *Granule) {
 	// commit our compacted writes.
 	// Do this here to avoid a small race condition where we swap the index, and before what was previously a defer commit() would allow a read
 	// to not find the compacted parts
-	commit()
+	commit(t.wg.Done)
 
 	for {
 		curIndex := t.Index()
@@ -474,7 +482,7 @@ func (t *TableBlock) RowGroupIterator(
 	iterator func(rg dynparquet.DynamicRowGroup) bool,
 ) error {
 	index := t.Index()
-	watermark := t.db.beginRead()
+	watermark := t.table.db.beginRead()
 
 	var err error
 	index.Ascend(func(i btree.Item) bool {
