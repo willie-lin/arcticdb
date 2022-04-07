@@ -2,6 +2,7 @@ package arcticdb
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"unsafe"
@@ -48,7 +49,7 @@ func NewGranule(granulesCreated prometheus.Counter, tableConfig *TableConfig, fi
 	// Find the least column
 	if firstPart != nil {
 		g.card = atomic.NewUint64(uint64(firstPart.Buf.NumRows()))
-		g.parts.Prepend(firstPart)
+		_, _ = g.parts.Prepend(context.Background(), firstPart)
 		// Since we assume a part is sorted, we need only to look at the first row in each Part
 		row, err := firstPart.Buf.DynamicRowGroup(0).DynamicRows().ReadRow(nil)
 		if err != nil {
@@ -63,28 +64,36 @@ func NewGranule(granulesCreated prometheus.Counter, tableConfig *TableConfig, fi
 }
 
 // AddPart returns the new cardinality of the Granule.
-func (g *Granule) AddPart(p *Part) uint64 {
+func (g *Granule) AddPart(ctx context.Context, p *Part) (uint64, error) {
 	rows := p.Buf.NumRows()
 	if rows == 0 {
-		return g.card.Load()
+		return g.card.Load(), nil
 	}
-	node := g.parts.Prepend(p)
+	node, err := g.parts.Prepend(ctx, p)
+	if err != nil {
+		return 0, err
+	}
 
 	newcard := g.card.Add(uint64(p.Buf.NumRows()))
 	r, err := p.Buf.DynamicRowGroup(0).DynamicRows().ReadRow(nil)
 	if err != nil {
-		// TODO(brancz): handle error
-		panic(err)
+		return 0, err
 	}
 
+loop:
 	for {
-		least := g.least.Load()
-		if least == nil || g.tableConfig.schema.RowLessThan(r, (*dynparquet.DynamicRow)(least)) {
-			if g.least.CAS(least, unsafe.Pointer(r)) {
-				break
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+			least := g.least.Load()
+			if least == nil || g.tableConfig.schema.RowLessThan(r, (*dynparquet.DynamicRow)(least)) {
+				if g.least.CAS(least, unsafe.Pointer(r)) {
+					break loop
+				}
+			} else {
+				break loop
 			}
-		} else {
-			break
 		}
 	}
 
@@ -93,7 +102,7 @@ func (g *Granule) AddPart(p *Part) uint64 {
 		addPartToGranule(g.newGranules, p)
 	}
 
-	return newcard
+	return newcard, nil
 }
 
 // split a granule into n sized granules. With the last granule containing the remainder.

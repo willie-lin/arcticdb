@@ -1,6 +1,7 @@
 package arcticdb
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -49,6 +50,8 @@ func basicTable(t *testing.T, granuleSize int) *Table {
 }
 
 func TestTable(t *testing.T) {
+	ctx := context.Background()
+
 	table := basicTable(t, 2^12)
 
 	samples := dynparquet.Samples{{
@@ -94,7 +97,7 @@ func TestTable(t *testing.T) {
 	buf, err := samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	samples = dynparquet.Samples{{
@@ -114,7 +117,7 @@ func TestTable(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	samples = dynparquet.Samples{{
@@ -135,7 +138,7 @@ func TestTable(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	err = table.Iterator(memory.NewGoAllocator(), nil, nil, nil, func(ar arrow.Record) error {
@@ -169,6 +172,8 @@ func TestTable(t *testing.T) {
 }
 
 func Test_Table_GranuleSplit(t *testing.T) {
+	ctx := context.Background()
+
 	table := basicTable(t, 4)
 
 	samples := dynparquet.Samples{{
@@ -211,7 +216,7 @@ func Test_Table_GranuleSplit(t *testing.T) {
 	buf, err := samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	samples = dynparquet.Samples{{
@@ -230,7 +235,7 @@ func Test_Table_GranuleSplit(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	samples = dynparquet.Samples{{
@@ -250,7 +255,7 @@ func Test_Table_GranuleSplit(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	// Wait for the index to be updated by the asynchronous granule split.
@@ -295,6 +300,8 @@ func Test_Table_GranuleSplit(t *testing.T) {
 
 */
 func Test_Table_InsertLowest(t *testing.T) {
+	ctx := context.Background()
+
 	table := basicTable(t, 4)
 
 	samples := dynparquet.Samples{{
@@ -344,7 +351,7 @@ func Test_Table_InsertLowest(t *testing.T) {
 
 	// Since we are inserting 4 elements and the granule size is 4, the granule
 	// will immediately split.
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	// Since a compaction happens async, it may abort if it runs before the transactions are completed. In that case; we'll manually compact the granule
@@ -370,7 +377,7 @@ func Test_Table_InsertLowest(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	// Wait for the index to be updated by the asynchronous granule split.
@@ -396,14 +403,15 @@ func Test_Table_InsertLowest(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
-	table.Iterator(memory.NewGoAllocator(), nil, nil, nil, func(r arrow.Record) error {
+	err = table.Iterator(memory.NewGoAllocator(), nil, nil, nil, func(r arrow.Record) error {
 		defer r.Release()
 		t.Log(r)
 		return nil
 	})
+	require.NoError(t, err)
 
 	require.Equal(t, 2, table.active.Index().Len())
 	require.Equal(t, uint64(3), table.active.Index().Min().(*Granule).card.Load()) // [1,10,11]
@@ -456,7 +464,7 @@ func Test_Table_Concurrency(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < inserts; i++ {
-				if err := table.Insert(generateRows(rows)); err != nil {
+				if err := table.Insert(context.Background(), generateRows(rows)); err != nil {
 					fmt.Println("Received error on insert: ", err)
 				}
 			}
@@ -466,7 +474,7 @@ func Test_Table_Concurrency(t *testing.T) {
 	wg.Wait()
 	table.Sync()
 
-	// Sync has happened so all transactions are complete. We should be able to wait unti the watermark is equal to the the number of tx
+	// Sync has happened so all transactions are complete. We should be able to wait until the watermark is equal to the number of tx
 	for watermark := table.db.highWatermark.Load(); watermark < uint64(n*inserts); watermark = table.db.highWatermark.Load() {
 		time.Sleep(time.Millisecond)
 	}
@@ -572,6 +580,8 @@ func Test_Table_Concurrency(t *testing.T) {
 //}
 
 func Test_Table_ReadIsolation(t *testing.T) {
+	ctx := context.Background()
+
 	table := basicTable(t, 2<<12)
 
 	samples := dynparquet.Samples{{
@@ -614,7 +624,7 @@ func Test_Table_ReadIsolation(t *testing.T) {
 	buf, err := samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	// Perform a new insert that will have a higher tx id
@@ -634,7 +644,7 @@ func Test_Table_ReadIsolation(t *testing.T) {
 	buf, err = samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	err = table.Insert(ctx, buf)
 	require.NoError(t, err)
 
 	table.Sync()
@@ -671,6 +681,35 @@ func Test_Table_ReadIsolation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(4), rows)
+}
+
+func Test_Table_InsertTimeout(t *testing.T) {
+	table := basicTable(t, 2<<12)
+
+	// Perform a new insert that will have a higher tx id
+	samples := dynparquet.Samples{{
+		Labels: []dynparquet.Label{
+			{Name: "blarg", Value: "blarg"},
+			{Name: "blah", Value: "blah"},
+		},
+		Stacktrace: []uuid.UUID{
+			{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1},
+			{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2},
+		},
+		Timestamp: 1,
+		Value:     1,
+	}}
+
+	buf, err := samples.ToBuffer(table.Schema())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+
+	err = table.Insert(ctx, buf)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	table.Sync()
 }
 
 //func Test_Table_Sorting(t *testing.T) {

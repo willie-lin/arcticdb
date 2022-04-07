@@ -2,6 +2,7 @@ package arcticdb
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -168,9 +169,9 @@ func (t *Table) Sync() {
 	t.ActiveBlock().Sync()
 }
 
-func (t *Table) Insert(buf *dynparquet.Buffer) error {
+func (t *Table) Insert(ctx context.Context, buf *dynparquet.Buffer) error {
 	block := t.ActiveBlock()
-	err := block.Insert(buf)
+	err := block.Insert(ctx, buf)
 	if err != nil {
 		return err
 	}
@@ -307,7 +308,7 @@ func (t *TableBlock) Sync() {
 	t.wg.Wait()
 }
 
-func (t *TableBlock) Insert(buf *dynparquet.Buffer) error {
+func (t *TableBlock) Insert(ctx context.Context, buf *dynparquet.Buffer) error {
 	defer func() {
 		t.table.metrics.rowsInserted.Add(float64(buf.NumRows()))
 		t.table.metrics.rowInsertSize.Observe(float64(buf.NumRows()))
@@ -321,13 +322,17 @@ func (t *TableBlock) Insert(buf *dynparquet.Buffer) error {
 	tx, _, commit := t.table.db.begin()
 	defer commit()
 
-	rowsToInsertPerGranule, err := t.splitRowsByGranule(buf)
+	rowsToInsertPerGranule, err := t.splitRowsByGranule(ctx, buf)
 	if err != nil {
 		return fmt.Errorf("failed to split rows by granule: %w", err)
 	}
 
 	for granule, serBuf := range rowsToInsertPerGranule {
-		if granule.AddPart(NewPart(tx, serBuf)) >= uint64(t.table.config.granuleSize) {
+		granuleSize, err := granule.AddPart(ctx, NewPart(tx, serBuf))
+		if err != nil {
+			return err
+		}
+		if granuleSize >= uint64(t.table.config.granuleSize) {
 			t.wg.Add(1)
 			go t.compact(granule)
 		}
@@ -522,12 +527,14 @@ func (t *TableBlock) Index() *btree.BTree {
 
 func (t *TableBlock) granuleIterator(iterator func(g *Granule) bool) {
 	t.Index().Ascend(func(i btree.Item) bool {
-		g := i.(*Granule)
-		return iterator(g)
+		return iterator(i.(*Granule))
 	})
 }
 
-func (t *TableBlock) splitRowsByGranule(buf *dynparquet.Buffer) (map[*Granule]*dynparquet.SerializedBuffer, error) {
+func (t *TableBlock) splitRowsByGranule(ctx context.Context, buf *dynparquet.Buffer) (
+	map[*Granule]*dynparquet.SerializedBuffer,
+	error,
+) {
 	// Special case: if there is only one granule, insert parts into it until full.
 	index := t.Index()
 	if index.Len() == 1 {
@@ -540,17 +547,23 @@ func (t *TableBlock) splitRowsByGranule(buf *dynparquet.Buffer) (map[*Granule]*d
 		}
 
 		rows := buf.Rows()
+	loop:
 		for {
-			row, err := rows.ReadRow(nil)
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				return nil, ErrReadRow{err}
-			}
-			err = w.WriteRow(row)
-			if err != nil {
-				return nil, ErrWriteRow{err}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				row, err := rows.ReadRow(nil)
+				if err == io.EOF {
+					break loop
+				}
+				if err != nil {
+					return nil, ErrReadRow{err}
+				}
+				err = w.WriteRow(row)
+				if err != nil {
+					return nil, ErrWriteRow{err}
+				}
 			}
 		}
 
@@ -588,36 +601,42 @@ func (t *TableBlock) splitRowsByGranule(buf *dynparquet.Buffer) (map[*Granule]*d
 		g := i.(*Granule)
 
 		for {
-			isLess := t.table.config.schema.RowLessThan(row, g.Least())
-			if isLess {
-				if prev != nil {
-					w, ok := writerByGranule[prev]
-					if !ok {
-						b := bytes.NewBuffer(nil)
-						w, err = t.table.config.schema.NewWriter(b, buf.DynamicColumns())
+			select {
+			case <-ctx.Done():
+				ascendErr = ctx.Err()
+				return false
+			default:
+				isLess := t.table.config.schema.RowLessThan(row, g.Least())
+				if isLess {
+					if prev != nil {
+						w, ok := writerByGranule[prev]
+						if !ok {
+							b := bytes.NewBuffer(nil)
+							w, err = t.table.config.schema.NewWriter(b, buf.DynamicColumns())
+							if err != nil {
+								ascendErr = ErrCreateSchemaWriter{err}
+								return false
+							}
+							writerByGranule[prev] = w
+							bufByGranule[prev] = b
+						}
+						err = w.WriteRow(row.Row)
 						if err != nil {
-							ascendErr = ErrCreateSchemaWriter{err}
+							ascendErr = ErrWriteRow{err}
 							return false
 						}
-						writerByGranule[prev] = w
-						bufByGranule[prev] = b
+						row, err = rows.ReadRow(row)
+						if err == io.EOF {
+							// All rows accounted for
+							exhaustedAllRows = true
+							return false
+						}
+						if err != nil {
+							ascendErr = ErrReadRow{err}
+							return false
+						}
+						continue
 					}
-					err = w.WriteRow(row.Row)
-					if err != nil {
-						ascendErr = ErrWriteRow{err}
-						return false
-					}
-					row, err = rows.ReadRow(row)
-					if err == io.EOF {
-						// All rows accounted for
-						exhaustedAllRows = true
-						return false
-					}
-					if err != nil {
-						ascendErr = ErrReadRow{err}
-						return false
-					}
-					continue
 				}
 			}
 
@@ -694,7 +713,7 @@ func addPartToGranule(granules []*Granule, p *Part) {
 	for _, g := range granules {
 		if g.tableConfig.schema.RowLessThan(row, g.Least()) {
 			if prev != nil {
-				prev.AddPart(p)
+				prev.AddPart(context.TODO(), p)
 				return
 			}
 		}
@@ -703,7 +722,7 @@ func addPartToGranule(granules []*Granule, p *Part) {
 
 	if prev != nil {
 		// Save part to prev
-		prev.AddPart(p)
+		prev.AddPart(context.TODO(), p)
 	}
 }
 

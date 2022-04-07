@@ -1,6 +1,7 @@
 package arcticdb
 
 import (
+	"context"
 	"unsafe"
 
 	"go.uber.org/atomic"
@@ -55,19 +56,25 @@ func (l *PartList) Sentinel(s SentinelType) *PartList {
 }
 
 // Prepend a node onto the front of the list.
-func (l *PartList) Prepend(part *Part) *Node {
+func (l *PartList) Prepend(ctx context.Context, part *Part) (*Node, error) {
 	node := &Node{
 		part: part,
 	}
-	for { // continue until a successful compare and swap occurs
-		next := l.next.Load()
-		node.next = atomic.NewUnsafePointer(next)
-		if next != nil && (*Node)(next).sentinel == Compacted { // This list is apart of a compacted granule, propogate the compacted value so each subsequent Prepend can return the correct value
-			node.sentinel = Compacted
-		}
-		if l.next.CAS(next, unsafe.Pointer(node)) {
-			l.total.Inc()
-			return node
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			// continue until a successful compare and swap occurs
+			next := l.next.Load()
+			node.next = atomic.NewUnsafePointer(next)
+			if next != nil && (*Node)(next).sentinel == Compacted { // This list is apart of a compacted granule, propogate the compacted value so each subsequent Prepend can return the correct value
+				node.sentinel = Compacted
+			}
+			if l.next.CAS(next, unsafe.Pointer(node)) {
+				l.total.Inc()
+				return node, nil
+			}
 		}
 	}
 }

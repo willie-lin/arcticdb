@@ -1,6 +1,7 @@
 package arcticdb
 
 import (
+	"context"
 	"testing"
 
 	"github.com/apache/arrow/go/v8/arrow"
@@ -65,7 +66,7 @@ func TestFilter(t *testing.T) {
 		buf, err := samples[i : i+1].ToBuffer(table.Schema())
 		require.NoError(t, err)
 
-		err = table.Insert(buf)
+		err = table.Insert(context.Background(), buf)
 		require.NoError(t, err)
 	}
 
