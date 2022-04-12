@@ -358,6 +358,10 @@ func Test_Table_InsertLowest(t *testing.T) {
 		table.Sync()
 	}
 
+	require.Equal(t, 2, table.active.Index().Len())
+	require.Equal(t, uint64(2), table.active.Index().Min().(*Granule).card.Load()) // [13, 12]
+	require.Equal(t, uint64(2), table.active.Index().Max().(*Granule).card.Load()) // [11, 10]
+
 	samples = dynparquet.Samples{{
 		Labels: []dynparquet.Label{
 			{Name: "label14", Value: "value14"},
@@ -380,8 +384,8 @@ func Test_Table_InsertLowest(t *testing.T) {
 	table.Sync()
 
 	require.Equal(t, 2, table.active.Index().Len())
-	require.Equal(t, uint64(3), table.active.Index().Min().(*Granule).card.Load()) // [10,11]
-	require.Equal(t, uint64(2), table.active.Index().Max().(*Granule).card.Load()) // [12,13,14]
+	require.Equal(t, uint64(3), table.active.Index().Min().(*Granule).card.Load()) // [14, 13, 12]
+	require.Equal(t, uint64(2), table.active.Index().Max().(*Granule).card.Load()) // [11, 10]
 
 	// Insert a new column that is the lowest column yet; expect it to be added to the minimum column
 	samples = dynparquet.Samples{{
@@ -402,6 +406,9 @@ func Test_Table_InsertLowest(t *testing.T) {
 	_, err = table.InsertBuffer(buf)
 	require.NoError(t, err)
 
+	// Wait for the index to be updated by the asynchronous granule split.
+	table.Sync()
+
 	table.Iterator(memory.NewGoAllocator(), nil, nil, nil, func(r arrow.Record) error {
 		defer r.Release()
 		t.Log(r)
@@ -409,8 +416,8 @@ func Test_Table_InsertLowest(t *testing.T) {
 	})
 
 	require.Equal(t, 2, table.active.Index().Len())
-	require.Equal(t, uint64(3), table.active.Index().Min().(*Granule).card.Load()) // [1,10,11]
-	require.Equal(t, uint64(3), table.active.Index().Max().(*Granule).card.Load()) // [12,13,14]
+	require.Equal(t, uint64(3), table.active.Index().Min().(*Granule).card.Load()) // [14,13,12]
+	require.Equal(t, uint64(3), table.active.Index().Max().(*Granule).card.Load()) // [11,10,1]
 }
 
 // This test issues concurrent writes to the database, and expects all of them to be recorded successfully.

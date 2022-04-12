@@ -15,7 +15,7 @@ func Concat(drg ...DynamicRowGroup) DynamicRowGroup {
 
 	return &concatenatedDynamicRowGroup{
 		RowGroup:       parquet.Concat(rg[0].Schema(), rg),
-		dynamicColumns: make(map[string][]string),
+		dynamicColumns: drg[0].DynamicColumns(),
 	}
 }
 

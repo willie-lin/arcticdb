@@ -40,20 +40,14 @@ func (e ErrCreateSchemaWriter) Error() string {
 }
 
 type TableConfig struct {
-	schema            *dynparquet.Schema
-	granuleSize       int
-	activeMemoryLimit int64
+	schema *dynparquet.Schema
 }
 
 func NewTableConfig(
 	schema *dynparquet.Schema,
-	granuleSize int,
-	activeMemoryLimit int64,
 ) *TableConfig {
 	return &TableConfig{
-		schema:            schema,
-		granuleSize:       granuleSize,
-		activeMemoryLimit: activeMemoryLimit,
+		schema: schema,
 	}
 }
 
@@ -654,7 +648,8 @@ func (t *TableBlock) splitRowsByGranule(buf *dynparquet.SerializedBuffer) (map[*
 		g := i.(*Granule)
 
 		for {
-			isLess := t.table.config.schema.RowLessThan(row, g.Least())
+			least := g.Least()
+			isLess := t.table.config.schema.RowLessThan(row, least)
 			if isLess {
 				if prev != nil {
 					w, ok := writerByGranule[prev]
