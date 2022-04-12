@@ -1,6 +1,7 @@
 package dynparquet
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sort"
@@ -357,6 +358,27 @@ func (s *Schema) NewBuffer(dynamicColumns map[string][]string) (*Buffer, error) 
 			parquet.SortingColumns(cols...),
 		),
 	}, nil
+}
+
+// NewWriter returns a new parquet writer with a concrete parquet schema
+// generated using the given concrete dynamic column names.
+func (s *Schema) SerializeBuffer(buffer *Buffer) ([]byte, error) {
+	b := bytes.NewBuffer(nil)
+	w, err := s.NewWriter(b, buffer.DynamicColumns())
+	if err != nil {
+		return nil, fmt.Errorf("create writer: %w", err)
+	}
+
+	_, err = parquet.CopyRows(w, buffer.Rows())
+	if err != nil {
+		return nil, fmt.Errorf("copy rows: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		return nil, fmt.Errorf("close writer: %w", err)
+	}
+
+	return b.Bytes(), nil
 }
 
 // NewWriter returns a new parquet writer with a concrete parquet schema

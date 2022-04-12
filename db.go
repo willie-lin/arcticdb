@@ -2,6 +2,7 @@ package arcticdb
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	"github.com/go-kit/log"
@@ -12,20 +13,22 @@ import (
 )
 
 type ColumnStore struct {
-	mtx *sync.RWMutex
-	dbs map[string]*DB
-	reg prometheus.Registerer
+	mtx  *sync.RWMutex
+	dbs  map[string]*DB
+	reg  prometheus.Registerer
+	path string
 }
 
-func New(reg prometheus.Registerer) *ColumnStore {
+func New(reg prometheus.Registerer, path string) *ColumnStore {
 	if reg == nil {
 		reg = prometheus.NewRegistry()
 	}
 
 	return &ColumnStore{
-		mtx: &sync.RWMutex{},
-		dbs: map[string]*DB{},
-		reg: reg,
+		mtx:  &sync.RWMutex{},
+		dbs:  map[string]*DB{},
+		reg:  reg,
+		path: path,
 	}
 }
 
@@ -35,6 +38,8 @@ type DB struct {
 	mtx    *sync.RWMutex
 	tables map[string]*Table
 	reg    prometheus.Registerer
+
+	wal *WAL
 
 	// Databases monotonically increasing transaction id
 	tx *atomic.Uint64
@@ -46,12 +51,12 @@ type DB struct {
 	highWatermark *atomic.Uint64
 }
 
-func (s *ColumnStore) DB(name string) *DB {
+func (s *ColumnStore) DB(name string) (*DB, error) {
 	s.mtx.RLock()
 	db, ok := s.dbs[name]
 	s.mtx.RUnlock()
 	if ok {
-		return db
+		return db, nil
 	}
 
 	s.mtx.Lock()
@@ -61,7 +66,12 @@ func (s *ColumnStore) DB(name string) *DB {
 	// wasn't concurrently created.
 	db, ok = s.dbs[name]
 	if ok {
-		return db
+		return db, nil
+	}
+
+	wal, err := OpenWAL(filepath.Join(s.path, name, "wal"))
+	if err != nil {
+		return nil, err
 	}
 
 	db = &DB{
@@ -71,12 +81,13 @@ func (s *ColumnStore) DB(name string) *DB {
 		reg:           prometheus.WrapRegistererWith(prometheus.Labels{"db": name}, s.reg),
 		tx:            atomic.NewUint64(0),
 		highWatermark: atomic.NewUint64(0),
+		wal:           wal,
 	}
 
 	db.txPool = NewTxPool(db.highWatermark)
 
 	s.dbs[name] = db
-	return db
+	return db, nil
 }
 
 func (db *DB) Table(name string, config *TableConfig, logger log.Logger) (*Table, error) {

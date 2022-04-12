@@ -176,17 +176,36 @@ func (t *Table) Sync() {
 	t.ActiveBlock().Sync()
 }
 
-func (t *Table) Insert(buf *dynparquet.Buffer) error {
-	block := t.ActiveBlock()
-	err := block.Insert(buf)
+func (t *Table) InsertBuffer(buf *dynparquet.Buffer) (uint64, error) {
+	b, err := t.config.schema.SerializeBuffer(buf)
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("serialize buffer: %w", err)
+	}
+
+	return t.Insert(b)
+}
+
+func (t *Table) Insert(buf []byte) (uint64, error) {
+	tx, _, commit := t.db.begin()
+	defer commit()
+
+	t.db.wal.Write(tx, buf)
+
+	serBuf, err := dynparquet.ReaderFromBytes(buf)
+	if err != nil {
+		return 0, fmt.Errorf("deserialize buffer: %w", err)
+	}
+
+	block := t.ActiveBlock()
+	err = block.Insert(tx, serBuf)
+	if err != nil {
+		return 0, err
 	}
 
 	if block.Size() > t.config.activeMemoryLimit {
 		level.Debug(t.logger).Log("msg", "rotating block")
 		if err := t.RotateBlock(); err != nil {
-			return fmt.Errorf("failed to rotate block: %w", err)
+			return 0, fmt.Errorf("failed to rotate block: %w", err)
 		}
 		level.Debug(t.logger).Log("msg", "done rotating block")
 		go func() {
@@ -196,7 +215,7 @@ func (t *Table) Insert(buf *dynparquet.Buffer) error {
 		}()
 	}
 
-	return nil
+	return tx, nil
 }
 
 // Iterator iterates in order over all granules in the table. It stops iterating when the iterator function returns false.
@@ -321,7 +340,7 @@ func (t *TableBlock) Sync() {
 	t.wg.Wait()
 }
 
-func (t *TableBlock) Insert(buf *dynparquet.Buffer) error {
+func (t *TableBlock) Insert(tx uint64, buf *dynparquet.SerializedBuffer) error {
 	defer func() {
 		t.table.metrics.rowsInserted.Add(float64(buf.NumRows()))
 		t.table.metrics.rowInsertSize.Observe(float64(buf.NumRows()))
@@ -331,9 +350,6 @@ func (t *TableBlock) Insert(buf *dynparquet.Buffer) error {
 		t.table.metrics.zeroRowsInserted.Add(float64(buf.NumRows()))
 		return nil
 	}
-
-	tx, _, commit := t.table.db.begin()
-	defer commit()
 
 	rowsToInsertPerGranule, err := t.splitRowsByGranule(buf)
 	if err != nil {
@@ -577,7 +593,7 @@ func (t *TableBlock) granuleIterator(iterator func(g *Granule) bool) {
 	})
 }
 
-func (t *TableBlock) splitRowsByGranule(buf *dynparquet.Buffer) (map[*Granule]*dynparquet.SerializedBuffer, error) {
+func (t *TableBlock) splitRowsByGranule(buf *dynparquet.SerializedBuffer) (map[*Granule]*dynparquet.SerializedBuffer, error) {
 	// Special case: if there is only one granule, insert parts into it until full.
 	index := t.Index()
 	if index.Len() == 1 {
@@ -589,7 +605,7 @@ func (t *TableBlock) splitRowsByGranule(buf *dynparquet.Buffer) (map[*Granule]*d
 			return nil, ErrCreateSchemaWriter{err}
 		}
 
-		rows := buf.Rows()
+		rows := buf.Reader()
 		for {
 			row, err := rows.ReadRow(nil)
 			if err == io.EOF {

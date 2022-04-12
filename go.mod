@@ -12,6 +12,8 @@ require (
 	github.com/prometheus/client_golang v1.12.1
 	github.com/segmentio/parquet-go v0.0.0-20220330180547-542d8f0815f1
 	github.com/stretchr/testify v1.7.1
+	github.com/tidwall/wal v1.1.7
+	go.uber.org/atomic v1.9.0
 )
 
 require (
@@ -32,7 +34,10 @@ require (
 	github.com/prometheus/common v0.32.1 // indirect
 	github.com/prometheus/procfs v0.7.3 // indirect
 	github.com/segmentio/encoding v0.3.3 // indirect
-	go.uber.org/atomic v1.9.0 // indirect
+	github.com/tidwall/gjson v1.10.2 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/tinylru v1.1.0 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20211013180041-c96bc1413d57 // indirect
 	golang.org/x/sys v0.0.0-20220128215802-99c3d69c2c27 // indirect
 	golang.org/x/tools v0.1.9 // indirect
@@ -42,3 +47,5 @@ require (
 )
 
 replace github.com/apache/arrow/go/v8 => github.com/brancz/arrow/go/v8 v8.0.0-20220331075317-4a90e3994fc9
+
+replace github.com/segmentio/parquet-go => ../../segmentio/parquet-go

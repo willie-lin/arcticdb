@@ -1,6 +1,7 @@
 package arcticdb
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/apache/arrow/go/v8/arrow"
@@ -20,8 +21,9 @@ func TestDistinct(t *testing.T) {
 		512*1024*1024,
 	)
 
-	c := New(nil)
-	db := c.DB("test")
+	c := New(nil, filepath.Join("/tmp", t.Name()))
+	db, err := c.DB("test")
+	require.NoError(t, err)
 	table, err := db.Table("test", config, newTestLogger(t))
 	require.NoError(t, err)
 
@@ -65,7 +67,7 @@ func TestDistinct(t *testing.T) {
 	buf, err := samples.ToBuffer(table.Schema())
 	require.NoError(t, err)
 
-	err = table.Insert(buf)
+	_, err = table.InsertBuffer(buf)
 	require.NoError(t, err)
 
 	tests := map[string]struct {
