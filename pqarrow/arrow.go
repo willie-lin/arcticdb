@@ -141,7 +141,7 @@ func contiguousParquetRowGroupToArrowRecord(
 	}
 
 	fields := make([]arrow.Field, 0, len(parquetFields))
-	cols := make([]array.Interface, 0, len(parquetFields))
+	cols := make([]arrow.Array, 0, len(parquetFields))
 
 	for i, parquetField := range parquetFields {
 		if includedProjection(projections, parquetField.Name()) {
