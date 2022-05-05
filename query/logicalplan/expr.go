@@ -554,8 +554,8 @@ func (f AggFunc) String() string {
 	}
 }
 
-func Sum(expr Expr) AggregationFunction {
-	return AggregationFunction{
+func Sum(expr Expr) *AggregationFunction {
+	return &AggregationFunction{
 		Func: SumAggFunc,
 		Expr: expr,
 	}
