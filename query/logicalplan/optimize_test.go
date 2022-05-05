@@ -76,10 +76,10 @@ func TestOptimizeFilterPushDown(t *testing.T) {
 	require.Equal(t, &TableScan{
 		TableName: "table1",
 		// Only these columns are needed to compute the result.
-		Filter: BinaryExpr{
-			Left: Column{ColumnName: "labels.test"},
+		Filter: &BinaryExpr{
+			Left: &Column{ColumnName: "labels.test"},
 			Op:   EqOp,
-			Right: LiteralExpr{
+			Right: &LiteralExpr{
 				Value: scalar.MakeScalar("abc"),
 			},
 		},
@@ -198,10 +198,10 @@ func TestAllOptimizers(t *testing.T) {
 			StaticColumnMatcher{ColumnName: "value"},
 			StaticColumnMatcher{ColumnName: "labels.test"},
 		},
-		Filter: BinaryExpr{
-			Left: Column{ColumnName: "labels.test"},
+		Filter: &BinaryExpr{
+			Left: &Column{ColumnName: "labels.test"},
 			Op:   EqOp,
-			Right: LiteralExpr{
+			Right: &LiteralExpr{
 				Value: scalar.MakeScalar("abc"),
 			},
 		},

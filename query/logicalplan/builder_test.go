@@ -1,6 +1,7 @@
 package logicalplan
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/apache/arrow/go/v8/arrow/scalar"
@@ -21,23 +22,23 @@ func TestLogicalPlanBuilder(t *testing.T) {
 	require.Equal(t, &LogicalPlan{
 		Projection: &Projection{
 			Exprs: []Expr{
-				Column{ColumnName: "stacktrace"},
+				&Column{ColumnName: "stacktrace"},
 			},
 		},
 		Input: &LogicalPlan{
 			Aggregation: &Aggregation{
-				GroupExprs: []Expr{Column{ColumnName: "stacktrace"}},
-				AggExpr: AliasExpr{
-					Expr:  AggregationFunction{Func: SumAggFunc, Expr: Column{ColumnName: "value"}},
+				GroupExprs: []Expr{&Column{ColumnName: "stacktrace"}},
+				AggExpr: &AliasExpr{
+					Expr:  &AggregationFunction{Func: SumAggFunc, Expr: &Column{ColumnName: "value"}},
 					Alias: "value_sum",
 				},
 			},
 			Input: &LogicalPlan{
 				Filter: &Filter{
-					Expr: BinaryExpr{
-						Left:  Column{ColumnName: "labels.test"},
+					Expr: &BinaryExpr{
+						Left:  &Column{ColumnName: "labels.test"},
 						Op:    EqOp,
-						Right: LiteralExpr{Value: scalar.MakeScalar("abc")},
+						Right: &LiteralExpr{Value: scalar.MakeScalar("abc")},
 					},
 				},
 				Input: &LogicalPlan{
@@ -59,7 +60,7 @@ func TestLogicalPlanBuilderWithoutProjection(t *testing.T) {
 
 	require.Equal(t, &LogicalPlan{
 		Distinct: &Distinct{
-			Columns: []Expr{Column{ColumnName: "labels.test"}},
+			Columns: []Expr{&Column{ColumnName: "labels.test"}},
 		},
 		Input: &LogicalPlan{
 			TableScan: &TableScan{
@@ -68,4 +69,21 @@ func TestLogicalPlanBuilderWithoutProjection(t *testing.T) {
 			},
 		},
 	}, p)
+}
+
+func TestLogicalPlanBuilderFilterJSON(t *testing.T) {
+	p := (&Builder{}).
+		Filter(Col("labels.test").Eq(Literal("abc"))).
+		Filter(Col("name").RegexMatch("^labels$"))
+
+	expected := `{"ExprType":"*logicalplan.BinaryExpr","Expr":{"LeftType":"*logicalplan.Column","Left":{"Expr":"string","ColumnName":"name"},"RightType":"*logicalplan.LiteralExpr","Right":{"ValueType":"*scalar.String","Value":"^labels$"},"Op":6}}`
+
+	output, err := json.Marshal(p.plan.Filter)
+	require.NoError(t, err)
+	require.JSONEq(t, expected, string(output))
+
+	var f *Filter
+	err = json.Unmarshal(output, &f)
+	require.NoError(t, err)
+	require.Equal(t, p.plan.Filter, f)
 }
